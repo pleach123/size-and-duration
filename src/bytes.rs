@@ -60,6 +60,7 @@ pub enum ParseByteError {
     InvalidNumber(String),
     UnknownUnit(String),
     Negative,
+    Overflow,
 }
 
 impl fmt::Display for ParseByteError {
@@ -69,6 +70,7 @@ impl fmt::Display for ParseByteError {
             ParseByteError::InvalidNumber(s) => write!(f, "invalid number: {s:?}"),
             ParseByteError::UnknownUnit(s) => write!(f, "unknown unit: {s:?}"),
             ParseByteError::Negative => write!(f, "size cannot be negative"),
+            ParseByteError::Overflow => write!(f, "size does not fit in a u64 byte count"),
         }
     }
 }
@@ -78,7 +80,9 @@ impl std::error::Error for ParseByteError {}
 /// Parses a byte size string like `"1.5MB"`, `"200 KiB"`, or `"512"` (bytes).
 ///
 /// Whitespace between the number and the unit is allowed. Unit matching is
-/// case-insensitive. A missing unit is treated as plain bytes.
+/// case-insensitive. A missing unit is treated as plain bytes. Values that
+/// don't fit in a `u64` byte count return `ParseByteError::Overflow` instead
+/// of silently wrapping or saturating.
 pub fn parse_bytes(input: &str) -> Result<u64, ParseByteError> {
     let s = input.trim();
     if s.is_empty() {
@@ -103,7 +107,15 @@ pub fn parse_bytes(input: &str) -> Result<u64, ParseByteError> {
     let unit = ByteUnit::from_suffix(unit_part.trim())
         .ok_or_else(|| ParseByteError::UnknownUnit(unit_part.trim().to_string()))?;
 
-    Ok((value * unit.multiplier() as f64).round() as u64)
+    // u64::MAX itself isn't exactly representable in f64 (it rounds up to
+    // 2^64), so comparing against it as a float catches anything that would
+    // round to a value a real u64 can't hold, not just values strictly past it.
+    let product = value * unit.multiplier() as f64;
+    if !product.is_finite() || product >= u64::MAX as f64 {
+        return Err(ParseByteError::Overflow);
+    }
+
+    Ok(product.round() as u64)
 }
 
 /// Formats a byte count as a human-readable binary size, e.g. `"1.50 GiB"`.
@@ -162,6 +174,13 @@ mod tests {
             parse_bytes("-5MB"),
             Err(ParseByteError::InvalidNumber(_))
         ));
+    }
+
+    #[test]
+    fn rejects_overflow() {
+        assert_eq!(parse_bytes("20000000000000000000GB"), Err(ParseByteError::Overflow));
+        let huge = format!("1{}B", "0".repeat(400));
+        assert_eq!(parse_bytes(&huge), Err(ParseByteError::Overflow));
     }
 
     #[test]
