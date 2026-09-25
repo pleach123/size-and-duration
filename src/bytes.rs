@@ -79,43 +79,60 @@ impl std::error::Error for ParseByteError {}
 
 /// Parses a byte size string like `"1.5MB"`, `"200 KiB"`, or `"512"` (bytes).
 ///
-/// Whitespace between the number and the unit is allowed. Unit matching is
-/// case-insensitive. A missing unit is treated as plain bytes. Values that
-/// don't fit in a `u64` byte count return `ParseByteError::Overflow` instead
-/// of silently wrapping or saturating.
+/// Multiple `<number><unit>` pairs may be chained without separators, e.g.
+/// `"1GB512MB"`, and the amounts add together. Whitespace between a number
+/// and its unit is allowed. Unit matching is case-insensitive. A missing
+/// unit is treated as plain bytes. Values that don't fit in a `u64` byte
+/// count return `ParseByteError::Overflow` instead of silently wrapping or
+/// saturating.
 pub fn parse_bytes(input: &str) -> Result<u64, ParseByteError> {
     let s = input.trim();
     if s.is_empty() {
         return Err(ParseByteError::Empty);
     }
 
-    let split_at = s
-        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .unwrap_or(s.len());
-    let (number_part, unit_part) = s.split_at(split_at);
-
-    if number_part.is_empty() {
-        return Err(ParseByteError::InvalidNumber(String::new()));
-    }
-    let value: f64 = number_part
-        .parse()
-        .map_err(|_| ParseByteError::InvalidNumber(number_part.to_string()))?;
-    if value < 0.0 {
-        return Err(ParseByteError::Negative);
-    }
-
-    let unit = ByteUnit::from_suffix(unit_part.trim())
-        .ok_or_else(|| ParseByteError::UnknownUnit(unit_part.trim().to_string()))?;
-
     // u64::MAX itself isn't exactly representable in f64 (it rounds up to
     // 2^64), so comparing against it as a float catches anything that would
     // round to a value a real u64 can't hold, not just values strictly past it.
-    let product = value * unit.multiplier() as f64;
-    if !product.is_finite() || product >= u64::MAX as f64 {
-        return Err(ParseByteError::Overflow);
+    let mut total: f64 = 0.0;
+    let mut rest = s;
+
+    while !rest.is_empty() {
+        let digits_end = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(rest.len());
+        if digits_end == 0 {
+            return Err(ParseByteError::InvalidNumber(rest.to_string()));
+        }
+        let (number_part, after_num) = rest.split_at(digits_end);
+        let value: f64 = number_part
+            .parse()
+            .map_err(|_| ParseByteError::InvalidNumber(number_part.to_string()))?;
+        if value < 0.0 {
+            return Err(ParseByteError::Negative);
+        }
+
+        let unit_end = after_num
+            .find(|c: char| c.is_ascii_digit())
+            .unwrap_or(after_num.len());
+        let (unit_part, next) = after_num.split_at(unit_end);
+        let unit = ByteUnit::from_suffix(unit_part.trim())
+            .ok_or_else(|| ParseByteError::UnknownUnit(unit_part.trim().to_string()))?;
+
+        let product = value * unit.multiplier() as f64;
+        if !product.is_finite() || product >= u64::MAX as f64 {
+            return Err(ParseByteError::Overflow);
+        }
+
+        total += product;
+        if !total.is_finite() || total >= u64::MAX as f64 {
+            return Err(ParseByteError::Overflow);
+        }
+
+        rest = next;
     }
 
-    Ok(product.round() as u64)
+    Ok(total.round() as u64)
 }
 
 /// Formats a byte count as a human-readable binary size, e.g. `"1.50 GiB"`.
@@ -157,6 +174,18 @@ mod tests {
     #[test]
     fn parses_binary_units_with_whitespace() {
         assert_eq!(parse_bytes("200 KiB").unwrap(), 200 * 1024);
+    }
+
+    #[test]
+    fn parses_chained_units() {
+        assert_eq!(
+            parse_bytes("1GB512MB").unwrap(),
+            1_000_000_000 + 512_000_000
+        );
+        assert_eq!(
+            parse_bytes("1GiB 512MiB").unwrap(),
+            (1u64 << 30) + 512 * (1u64 << 20)
+        );
     }
 
     #[test]

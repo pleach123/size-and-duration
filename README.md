@@ -32,11 +32,12 @@ assert_eq!(format_duration(timeout), "1h30m");
 
 ## Byte sizes
 
-`parse_bytes` accepts a number followed by an optional unit: `B`, `KB`,
-`MB`, `GB`, `TB` (decimal, powers of 1000) or `KiB`, `MiB`, `GiB`, `TiB`
-(binary, powers of 1024). No unit means plain bytes. `format_bytes` always
-renders using the binary units, since that's what most people reading a
-memory or disk figure actually expect.
+`parse_bytes` accepts one or more `<number><unit>` pairs chained together,
+e.g. `"1GB512MB"`, and adds them up. Units: `B`, `KB`, `MB`, `GB`, `TB`
+(decimal, powers of 1000) or `KiB`, `MiB`, `GiB`, `TiB` (binary, powers of
+1024). No unit means plain bytes. `format_bytes` always renders using the
+binary units, since that's what most people reading a memory or disk
+figure actually expect.
 
 ## Durations
 
